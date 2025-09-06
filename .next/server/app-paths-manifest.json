@@ -1,0 +1,10 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/forecast8h/route": "app/api/forecast8h/route.js",
+  "/api/notifications/in-app/route": "app/api/notifications/in-app/route.js",
+  "/api/health/route": "app/api/health/route.js",
+  "/api/subscribe-webpush/route": "app/api/subscribe-webpush/route.js",
+  "/api/test-notification/route": "app/api/test-notification/route.js",
+  "/api/settings/route": "app/api/settings/route.js",
+  "/page": "app/page.js"
+}

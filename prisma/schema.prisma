@@ -1,0 +1,96 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Site {
+  id          String       @id @default(cuid())
+  name        String
+  latitude    Float
+  longitude   Float
+  address     String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  alertEvents AlertEvent[]
+
+  @@map("sites")
+}
+
+model User {
+  id                               String                          @id @default(cuid())
+  email                            String                          @unique
+  thresholds                       Json?
+  preferences                      Json?
+  quietHoursStart                  String?
+  quietHoursEnd                    String?
+  createdAt                        DateTime                        @default(now())
+  updatedAt                        DateTime                        @updatedAt
+  webPushSubscriptions             WebPushSubscription[]
+  notificationChannelPreferences   NotificationChannelPreference[]
+  notifications                    Notification[]
+
+  @@map("users")
+}
+
+model WebPushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, endpoint])
+  @@map("web_push_subscriptions")
+}
+
+model NotificationChannelPreference {
+  id        String   @id @default(cuid())
+  userId    String
+  channel   String
+  enabled   Boolean  @default(true)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channel])
+  @@map("notification_channel_preferences")
+}
+
+model AlertEvent {
+  id             String         @id @default(cuid())
+  siteId         String
+  type           String
+  message        String
+  timestamp      DateTime       @default(now())
+  dedupKey       String         @unique
+  site           Site           @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  notifications  Notification[]
+
+  @@index([siteId])
+  @@index([timestamp])
+  @@map("alert_events")
+}
+
+model Notification {
+  id            String      @id @default(cuid())
+  externalId    String?
+  alertEventId  String
+  userId        String
+  channel       String
+  sentAt        DateTime    @default(now())
+  status        String      @default("sent")
+  alertEvent    AlertEvent  @relation(fields: [alertEventId], references: [id], onDelete: Cascade)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([alertEventId])
+  @@index([userId])
+  @@index([sentAt])
+  @@map("notifications")
+}
