@@ -1,0 +1,1263 @@
+GPT-5
+
+
+PROMPT_START
+
+PROPTUL COMPLET care include clar: prognoză pe următoarele 8 ore, clonă de UI după wind.qub3.uk, canalele fixe de notificare (Email Resend, Web Push, SMS prin Resend SMS, In‑App, Quiet hours), multi‑utilizator cu prag per utilizator, multi‑provider meteo (OpenWeatherMap + Open‑Meteo), integrarea LLM Mistral Small 3.1 via OpenRouter (mesaje utile + glumă scurtă), logică tehnică detaliată, API, DB/Prisma, Netlify, variabile de mediu și criterii de acceptare.
+
+Titlu: Brief complet – Aplicație Alerte Vânt (Aleea Someșul Cald, București) – Prognoză 8 ore
+Data/TZ: 06 septembrie 2025, 18:26, Europe/Bucharest (EEST)
+
+Scop și obiective (clar)
+Aplicația prognozează viteza vântului pentru următoarele 8 ore și notifică utilizatorii când prognoza depășește pragul ales de fiecare utilizator.
+Zona țintă: Aleea Someșul Cald, București (geocodată și salvată).
+Fiecare utilizator are propriul prag (slider 20–100 km/h) și propriile canale de notificare.
+UI clonă fidelă a interfeței wind.qub3.uk (dark dashboard, grafic 8 ore, slider prag, setări canale).
+Sursă meteo selectabilă: OpenWeatherMap sau Open‑Meteo.
+Mesajele de alertă sunt reformulate cu LLM Mistral Small 3.1 (via OpenRouter) pentru claritate și o scurtă glumă sigură.
+Stack și infrastructură
+Frontend: Next.js 14 (App Router), TypeScript, Tailwind CSS, Recharts (grafic 8h).
+Backend: Next.js Route Handlers + Netlify Functions; Netlify Scheduled Functions (cron) pentru polling/alerte la 10 minute.
+DB: PostgreSQL (Neon/Supabase sau Netlify Prisma Postgres), Prisma ORM.
+Notificări (fixe):
+Email: Resend (plan free ~3.000 email/lună).
+Web Push: browser native (VAPID).
+SMS: Resend SMS (dacă disponibil în cont/region); fallback opțional Twilio. SMS livrat doar dacă activat de utilizator.
+In‑App: dashboard intern (stocare în DB).
+Quiet hours: interval de liniște configurabil per utilizator (ex. 22:00–07:00).
+LLM: Mistral Small 3.1 24B via OpenRouter API (model ex. mistralai/mistral-small).
+Hosting: Netlify; build: npx prisma migrate deploy && npm run build.
+LOGICA METEO – Prognoză pe următoarele 8 ore (ESENȚIAL)
+Obiectiv: generează o serie orară de 8 puncte (t0..t0+7h) pentru viteză și rafale, alimentând graficul și motorul de alerte.
+3.1 Achiziție și normalizare
+
+Coordonate site: obținute o singură dată prin geocodare (“Aleea Someșul Cald, Bucharest, RO”), salvate în Site.
+Provider la alegere:
+Open‑Meteo: endpoint forecast cu hourly=temperature_2m,wind_speed_10m,wind_gusts_10m,relative_humidity_2m,pressure_msl, windspeed_unit=kmh, timezone=Europe/Bucharest. Date orare directe (fără cheie).
+OpenWeatherMap: current weather + 5 day/3 hour forecast cu units=metric&lang=ro (cheie necesară). Conversie viteze: km/h = m/s × 3.6.
+Normalizare câmpuri: tempC, windKmh, gustKmh?, humidity, pressureHpa, ts (unix sec).
+3.2 Construire serie 8h (resampling/interpolare)
+
+Aliniere timp: t0 = următoarea limită de oră locală. Seria: t0, t0+1h, …, t0+7h.
+Open‑Meteo: ia direct cele 8 valori orare pentru ferestrele t0..t0+7h.
+OpenWeatherMap (3h → 1h): pentru fiecare oră din cele 8, interpolare liniară între punctele de 3h vecine, separat pentru windKmh și gustKmh.
+Punctul “Now” (opțional pentru header): folosește current; în prima oră aplică blend:
+v_1h = 0.6 * v_now + 0.4 * v_forecast_1h; la fel pentru gustKmh (dacă există).
+Măsura de risc pe oră: hazardKmh = max(windKmh, gustKmh || 0).
+Netezire preventivă la extreme: moving max pe o fereastră de 2 ore: hazard8h[i] = max(hazard[i], hazard[i+1] dacă există) pentru a nu rata rafale scurte.
+3.3 Evaluare per utilizator (prag personal)
+
+thresholdKmh salvat per user (slider 20–100).
+Identifică:
+firstCrossTs = prima oră din serie când hazardKmh ≥ thresholdKmh.
+peakKmh și peakTs în cele 8 ore.
+Niveluri (opțional pentru UI/mesaje):
+ATTENTION: peakKmh ≥ thresholdKmh și < max(70, thresholdKmh + 20).
+SEVERE: peakKmh ≥ max(70, thresholdKmh + 20).
+Dacă nu există depășire în 8 ore → “Normal” (nu trimite alertă, dar afișează prognoza).
+3.4 Quiet hours, cooldown, dedupe
+
+Quiet hours per user [quietStart, quietEnd] locale:
+ATTENTION în interval de liniște → amânare până la quietEnd (poți posta doar In‑App imediat).
+SEVERE → override liniștea, livrează imediat (siguranță).
+Cooldown per user: după închiderea unui eveniment, nu re‑alerta pe același nivel mai devreme decât cooldownMin (default 60 min).
+Dedupe: dedupeKey = siteId:userId:level:bucket_ora, bucket = floor(firstCrossTs/3600); nu emite dacă există eveniment “open” cu același key.
+UI – Clonă detaliată a https://wind.qub3.uk/ (dark)
+Structură și comportament:
+Header (sticky):
+Stânga: logo aplicație, titlu “Monitor Vânt Aleea Someșul Cald” + icon locație.
+Dreapta: badge “Online” (verde), text “Ultima actualizare: HH:mm:ss”, buton Actualizează (manual refresh).
+Panou Alertă de Siguranță (marquee):
+Stări: “PERICOL MAJOR DE VÂNT” (roșu sever), “Atenționare de vânt” (portocaliu), “Normal” (verde discret).
+Conținut: icon avertizare, sumar clar (viteza/rafale așteptate, ora estimată), 3–5 recomandări de siguranță (bulleturi), indicator “Now”/“Danger level”.
+Borduri și umbre consistente cu tema; accent sever: #b91c1c; atenționare: #ef4444/#f59e0b.
+Card “Condiții Actuale de Vânt”:
+Viteză curentă (font mare), rafale, direcție busolă + azimut (ex. W 270°).
+Subtitlu cu locația și ora locală (ex. “Aleea Someșul Cald • 20:19”).
+Semnalizare vizuală dacă actualele depășesc pragul utilizatorului.
+Metrice auxiliare (grid 4):
+Temperatură (°C), Umiditate (%), Presiune (hPa), Vizibilitate (km).
+Card “Prag de Alertă” (dreapta):
+Slider 20–100 km/h; etichete: Ușor (20–40), Moderat (40–60), Puternic (60–80), Extrem (80–100).
+Text explicativ “Cum funcționează”: primești alerte dacă vitezele prognozate (inclusiv rafalele) depășesc pragul tău în următoarele 8 ore.
+Afișează valoarea curentă a pragului mare și colorată.
+Secțiune “Prognoză Vânt 8 Ore” (central/stânga):
+Grafic Recharts, axă X: ore locale (Now, +1h…+7h).
+Serii: “Viteza Vântului” (linie albastră continuă), “Rafale de Vânt” (linie albastră punctată).
+Linie întreruptă galbenă la thresholdKmh (a utilizatorului).
+Legendă, tooltip formatat ro, unități km/h; subtitlu “Următoarele 8 ore • Actualizări la 3 ore (OWM) / orar (Open‑Meteo)”.
+Sub grafic: 4–8 plăcuțe orare (ex. Now, 20:00, 21:00, 22:00…) cu eticheta “Alertă” unde depășește pragul; altfel “Normal”.
+Coloană “Setări Notificări” (dreapta):
+Web Push: switch ON/OFF + “Notificările push sunt activate” + buton “Trimite Notificare de Test”.
+Alerte SMS: input E.164 (+40…), buton “Configurează SMS”.
+Alerte Email: input email, buton “Configurează Email”.
+Quiet hours: două time pickers (start/end locale), descriere cum se aplică.
+Panouri “Alerte Active” și “Istoric Alerte”:
+Lista evenimentelor cu nivel, oră estimată, viteză max, canale livrate.
+Footer:
+“Date furnizate de OpenWeatherMap / Open‑Meteo • Actualizări la 5–10 minute”.
+Atribuire/credit, disclaimere (pentru avertizări oficiale vezi ANM; urgențe 112).
+Notă: UI se inspiră din dashboard-uri meteo scurte pe vânt populare în industrie, similar cu prezentări de tip forecast orar/rafale văzute în paginile publice windy.app și secțiuni de statistici/rafale windy.app, dar aplicația noastră nu folosește windy.app ca sursă de date.
+
+Canale de notificare (fixe, cerute)
+Email (Resend): volum free tipic ~3.000/lună; conținut HTML + text, include logo și recomandări.
+Web Push (VAPID): notificări browser native; Service Worker /sw.js.
+SMS (Resend SMS): folosește Resend pentru SMS (dacă disponibil pentru cont/țară). Specifică sender (număr/alphanumeric) și respectă limite locale. Fallback opțional: Twilio pentru dezvoltare/prod dacă Resend SMS nu e disponibil.
+In‑App: stocare în DB; afișare în panoul de notificări din UI.
+Quiet hours: aplicate per utilizator conform regulilor din secțiunea 3.4.
+LLM pentru mesaje (Mistral Small 3.1 via OpenRouter)
+Scop: redactează alertă în română, scurtă, clară; adaugă o glumă sigură (1 propoziție), discretă pentru nivel SEVERE.
+Endpoint: https://openrouter.ai/api/v1/chat/completions; model ex. mistralai/mistral-small.
+Prompt sistem:
+Tu ești un asistent de siguranță meteo. Redactezi alerte meteo în română, concise, responsabile. La final, adaugă o glumă scurtă, neofensivă. Pentru SEVERE, gluma să fie foarte discretă.
+Prompt utilizator (variabile):
+Locație: {siteName}, {address}; Provider: {providerName}; Nivel: {ATTENTION|SEVERE}; Interval/Oră: {whenLocal}; Prag user: {thresholdKmh} km/h; Viteză estimată (max viteză/rafale): {peakKmh} km/h; Recomandări: {bullets scurte}. Output: titlu scurt + 2–3 propoziții + 1 glumă scurtă; fără linkuri/markdown.
+Filtrare/format:
+SMS ≤ 450 caractere; Web Push: max 2 propoziții + glumă; Email: extins (poate include bullets).
+Fallback static dacă OpenRouter nu răspunde. Nu trimite PII (email/telefon) către model.
+Date, modele și API
+7.1 Prisma (schemă esențială)
+
+Enum: Role { USER, ADMIN }, Channel { EMAIL, WEB_PUSH, SMS, IN_APP }, AlertLevel { ATTENTION, SEVERE }, WeatherProvider { OWM, OPEN_METEO }.
+Site { id, name, address, lat, lon, timezone="Europe/Bucharest", defaultProvider }.
+User { id, email, phoneE164?, role, thresholdKmh (default 50), hysteresisKmh (5), cooldownMin (60), quietStart?, quietEnd?, weatherProvider? }.
+WebPushSubscription { id, userId?, endpoint unique, p256dh, auth }.
+NotificationChannelPreference { id, userId, channel, enabled, quietStart?, quietEnd?, unique(userId, channel) }.
+AlertEvent { id, level, siteId, userId, source "current|forecast", forecastAt?, startedAt, endedAt?, status "open|closed", peakKmh?, dedupeKey unique }.
+Notification { id, userId, alertEventId, channel, status "sent|failed|skipped", error?, sentAt }.
+7.2 Rute API
+
+GET /api/forecast8h?provider=owm|open-meteo → { site, provider, current, series8h: [{ts, windKmh, gustKmh?, hazardKmh}], metrics }.
+PUT /api/settings → salvează thresholdKmh, canale active, quietStart/quietEnd, weatherProvider.
+POST /api/subscribe-webpush → salvează endpoint și chei pentru userul curent.
+GET /api/notifications/in-app → listarea notificărilor userului.
+POST /api/test-notification → declanșează un mesaj de test ATTENTION cu threshold curent (folosit de UI).
+GET /api/health → verifică DB, chei și coordonate.
+7.3 Funcție programată (Netlify Scheduled Function – la 10 minute)
+
+Pentru fiecare provider folosit de cel puțin un utilizator:
+Fetch current + forecast (OWM/OM) cu caching 5–10 min.
+Construiește seria 8h: resampling/interpolare/blend.
+Pentru fiecare utilizator din grupul acelui provider:
+Evaluează hazard8h vs thresholdKmh.
+Dacă depășește în 8h → creează/actualizează AlertEvent (dedupe + cooldown).
+Generează text prin LLM (fallback static).
+Livrează pe canalele active (respectând quiet hours) și înregistrează în Notification.
+Interacțiuni cheie în UI (clone wind.qub3.uk)
+Slider “Prag de Alertă”: persistă instant la schimbare (debounce 300 ms, PATCH la /api/settings).
+Switch Web Push: la ON → înregistrează Service Worker și PushSubscription, POST la /api/subscribe-webpush.
+“Trimite Notificare de Test”: POST la /api/test-notification; afișează toast + In‑App.
+SMS/Email: validări (E.164, RFC 5321), butoane “Configurează” trimit update la /api/settings și fac un test opțional.
+Grafic: la hover, tooltip arată vânt/rafale/hazard și label “Alertă” dacă peste prag.
+Banner “Mod simulare” dacă USE_MOCK_WEATHER=true.
+Variabile de mediu
+DATABASE_URL
+OPENWEATHER_API_KEY
+RESEND_API_KEY (Email + SMS prin Resend SMS, dacă disponibil)
+VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, NEXT_PUBLIC_VAPID_PUBLIC_KEY
+OPENROUTER_API_KEY
+RESEND_SMS_FROM (sau sender ID/număr alocat de Resend SMS)
+DEFAULT_WEATHER_PROVIDER=owm|open-meteo (fallback)
+USE_MOCK_WEATHER=true|false
+Netlify și build
+netlify.toml:
+[build] command = "npx prisma migrate deploy && npm run build", publish = ".next".
+[[plugins]] package = "@netlify/plugin-nextjs".
+Cron: funcție programată */10 * * * * (polling 10 minute).
+Prisma Client singleton în cod; pooling DB recomandat (folosește Prisma Postgres de la Netlify sau un provider cu pooling).
+Mesageria pe canale (rezumat operare)
+Email (Resend): HTML concis, titlu, interval oră, viteze estimare, recomandări. Adaugă logo și link “dezabonare” per canal.
+Web Push: titlu + 1–2 propoziții + glumă scurtă; icon: /alert-logo.png.
+SMS (Resend SMS): text ≤ 450 caractere, fără linkuri, accent pe oră, prag, viteză și acțiune de siguranță.
+In‑App: persistă payload-ul în Notification, randat în panoul UI.
+Quiet hours: ATTENTION amânat; SEVERE trimis imediat.
+Testare și criterii de acceptare
+Teste unitare:
+Resampling OWM 3h → 1h; blend cu “current” pentru prima oră.
+Calcul hazardKmh, firstCrossTs, peakKmh.
+Quiet hours, cooldown, dedupe.
+Integrare:
+Cron cu USE_MOCK_WEATHER=true și un dataset care depășește pragurile.
+LLM on/off (fallback static).
+E2E:
+Utilizator își setează pragul, activează canale, primește alertă doar când seria 8h îi depășește pragul.
+Acceptare:
+UI clonează clar secțiunile și comportamentele wind.qub3.uk.
+Seria afișată și logica de alertă sunt STRICT pentru următoarele 8 ore.
+Canalele: Email (Resend), Web Push, SMS (Resend SMS), In‑App. Quiet hours respectate.
+Considerații suplimentare
+Multi‑provider: UI poate comuta vizualizarea; alertele rulează pe providerul preferat al utilizatorului (dacă setat) sau pe default-ul site-ului.
+Rate‑limit și retry la furnizorii meteo; caching 5–10 min pentru a reduce apelurile.
+GDPR: consimțământ, dezabonare per canal, drept de ștergere, minimizare date (email, telefon opțional), retenție loguri 30 zile, notificări 90 zile.
+Disclaimer: aplicația nu înlocuiește avertizările oficiale; pentru urgențe, apel 112.
+Referințe context (UI/industrie)
+
+Dashboard-uri publice pentru vânt pun accent pe vizualizări orare și rafale; exemple de pagini cu prognoze/statistici la scară scurtă pe vânt: windy.app, windy.app. Acestea sunt doar referințe de prezentare, nu surse de date pentru aplicația noastră.
+PROMPT_END
+
+Notă: Dacă vrei, pot livra și pseudo‑cod pentru funcțiile buildEightHourSeries() (interpolare + blend) și evaluateUserThresholds() sau un schelet de proiect cu rutele/API și UI gata de clonă.
+
+
+
+Gemeni 2.5 PRO:
+
+==================================================================================
+        DOCUMENTATIE TEHNICA COMPLETA - APLICATIE "GRAND ARENA WIND MONITOR"
+==================================================================================
+
+PROIECT: Grand Arena Wind Monitor (Clonă funcțională a wind.qub3.uk)
+DATA GENERĂRII: 06 septembrie 2025
+VERSIUNE DOCUMENT: 4.0 (Final UI & Logic Definition)
+SCOP: Document unic, complet și final de specificații tehnice, UI/UX, arhitectură și
+      implementare pentru dezvoltarea aplicației, cu accent pe logica de prognoză
+      pe 8 ore și descrierea detaliată a interfeței.
+
+----------------------------------------------------------------------------------
+1. VIZIUNE DE ANSAMBLU ȘI CONCEPT
+----------------------------------------------------------------------------------
+
+Dezvoltarea unei aplicații web multi-user, care clonează fidel aspectul și
+funcționalitatea `wind.qub3.uk`. Aplicația este un instrument de alertare proactivă,
+specializat în monitorizarea **prognozei de vânt pentru următoarele 8 ore**
+într-o locație specifică (Aleea Someșul Cald, București). Utilizatorii își setează
+un prag de alertă personal, iar sistemul îi notifică în avans dacă se prognozează
+depășirea acestui prag. Alertele sunt îmbogățite cu mesaje creative generate de
+modelul AI Mistral și livrate pe multiple canale (Email, SMS, Web Push, In-App).
+
+
+----------------------------------------------------------------------------------
+2. DESCRIERE DETALIATĂ A INTERFEȚEI UI (Clonă fidelă a wind.qub3.uk)
+----------------------------------------------------------------------------------
+
+Interfața va fi un dashboard "single-page" cu o temă întunecată (dark mode),
+structurată pentru a oferi o imagine de ansamblu rapidă și controale intuitive.
+
+A. HEADER (Antet):
+   - Stânga: Logo-ul aplicației (imaginea furnizată) urmat de titlul "Monitor Vânt Aleea Someșul Cald".
+   - Dreapta:
+     - Indicator de Stare: Pictogramă Wi-Fi verde cu textul "Online".
+     - Timestamp: "Ultima actualizare: HH:MM:SS PM".
+     - Buton Principal: Un buton cu fundal întunecat și textul "[Actualizează]", având o pictogramă de reîncărcare.
+
+B. PANOU DE ALERTĂ ACTIVĂ (Condițional):
+   - Vizibilitate: Acest panou apare în partea de sus a conținutului principal DOAR atunci când o alertă majoră este activă.
+   - Design: Un container cu fundal roșu-închis și chenar roșu.
+   - Conținut:
+     - Titlu Principal: Pictogramă de avertizare (triunghi) urmată de textul "PERICOL MAJOR DE VÂNT".
+     - Descriere: Text explicativ, ex: "DANGER: Vânt extrem prognozat! Viteze peste [X] km/h...".
+     - Metrici Evidențiate: 3 coloane care afișează Viteza Maximă, Starea (Now - Activ în prezent) și Nivelul de Pericol (DANGER).
+     - Recomandări: O sub-secțiune "Recomandări de Siguranță" cu o listă de sfaturi practice (ex: "Rămâi în interior...", "Fixează obiectele mobile...").
+
+C. PANOU CONDIȚII ACTUALE & METEO GENERAL:
+   - Card Principal: Un card proeminent cu titlul "Condiții Actuale de Vânt" și locația.
+     - Valori Mari: "45 km/h" pentru Viteza Vântului și "55 km/h" pentru Rafale.
+     - Indicator Direcție: O pictogramă săgeată verde care indică direcția (ex: "W") și gradele ("270°").
+   - Carduri Secundare: O grilă de 4 carduri mai mici, fiecare cu pictograma și unitatea sa de măsură:
+     - Temperatură (ex: 22°C)
+     - Umiditate (ex: 60%)
+     - Presiune (ex: 1013 hPa)
+     - Vizibilitate (ex: 10 km)
+
+D. PANOU PROGNOZĂ VÂNT 8 ORE (Elementul central):
+   - Titlu: "Prognoză Vânt 8 Ore" cu un subtitlu informativ, ex: "Următoarele 8 ore • Actualizări la fiecare 3 ore".
+   - Grafic Liniar: O reprezentare vizuală a prognozei pe axa timpului (orizontal) și a vitezei (vertical).
+     - Axa X (Timp): Etichete orare pentru următoarele 8 ore (ex: Now, 21:00, 22:00 ... 02:00).
+     - Axa Y (Viteză): Etichete pentru viteza vântului în km/h.
+     - Serii de Date Reprezentate:
+       1. Viteza Vântului (linie continuă, albastră).
+       2. Rafale de Vânt (linie punctată, albastră deschis).
+       3. Prag de Alertă (linie întreruptă, galbenă) - O linie orizontală care reflectă valoarea setată de utilizator în panoul lateral.
+   - Tabel Sumar sub Grafic: Patru carduri care afișează valorile numerice pentru primele ore ale prognozei (ex: "Now: 50 km/h", "21:00: 52 km/h", etc.).
+
+E. PANOU DE CONTROL LATERAL (Dreapta):
+   - Card "Prag de Alertă":
+     - Un slider interactiv pe care utilizatorul îl poate glisa pentru a-și seta pragul de alertă (între 20 km/h și 100 km/h).
+     - Valoarea selectată este afișată numeric deasupra slider-ului.
+   - Card "Cum funcționează": Un text static explicativ care trebuie să sublinieze clar logica aplicației: "Vei primi alerte când vitezele vântului **prognozate** (inclusiv rafalele) depășesc pragul selectat în **următoarele 8 ore**...".
+   - Card "Setări Notificări": Panou dedicat configurării canalelor de alertă.
+     - "Notificări Push Browser": Un comutator (toggle) pentru activare/dezactivare și un buton "[Trimite Notificare de Test]".
+     - "Alerte SMS": Un câmp de introducere pentru numărul de telefon și un buton "[Configurează SMS]".
+     - "Alerte Email": Un câmp de introducere pentru adresa de email și un buton "[Configurează Email]".
+
+F. FOOTER (Subsol):
+   - Informații despre sursa datelor, credite și un avertisment ANM.
+
+
+----------------------------------------------------------------------------------
+3. LOGICA FUNDAMENTALĂ (PROGNOZĂ PROACTIVĂ PE 8 ORE)
+----------------------------------------------------------------------------------
+
+Acesta este mecanismul central al aplicației. Sistemul NU alertează pe baza vântului curent,
+ci funcționează PROACTIV, analizând **prognoza meteo pentru următoarele 8 ore**
+pentru a oferi utilizatorilor timp de pregătire.
+
+1.  **SCANARE PROGRAMATĂ**: O funcție serverless (`check-alerts`) rulează automat la intervale regulate (ex: 30 minute).
+
+2.  **PRELUARE PROGNOZĂ**: Funcția apelează un API meteo (OpenWeatherMap/Open-Meteo) și obține prognoza ORA-CU-ORA, incluzând viteza vântului și a rafalelor, pentru un interval de cel puțin 8 ore.
+
+3.  **ITERARE PRIN UTILIZATORI**: Functia preia din baza de date lista tuturor utilizatorilor și setările lor individuale.
+
+4.  **ANALIZA PROGNOZEI PE 8 ORE PENTRU FIECARE UTILIZATOR**: Pentru fiecare utilizator, sistemul scanează primele 8 intrări din prognoza orară și caută **prima oră** în care viteza vântului sau a rafalelor **va depăși** pragul setat de acel utilizator (`user.alertThreshold`).
+
+5.  **PREVENIREA SPAM-ULUI**: O alertă se trimite NUMAI DACĂ o depășire a pragului este găsită în prognoza pe 8 ore ȘI NU s-a mai trimis o alertă pentru acest eveniment în ultimele ore (se verifică un timestamp `lastAlertSentAt` în baza de date).
+
+6.  **DECLANȘARE NOTIFICARE**: Dacă o alertă validă este identificată, sistemul extrage datele evenimentului prognozat (ex: "Rafale de 85 km/h prognozate la ora 02:00"), le trimite către modelul AI Mistral pentru a genera un mesaj, distribuie mesajul final pe canalele active ale utilizatorului și actualizează timestamp-ul `lastAlertSentAt`.
+
+
+----------------------------------------------------------------------------------
+4. NOTIFICĂRI MULTI-CANAL (SPECIFICAȚII FURNIZOR)
+----------------------------------------------------------------------------------
+
+-   **Email**: Se va folosi **Resend**. Planul gratuit (3000 de emailuri/lună) este ideal pentru pornire. Template-urile de email vor include logo-ul aplicației.
+-   **SMS**: Se va folosi **Resend**. Serviciul lor include suport pentru trimiterea de SMS-uri.
+-   **Web Push Notifications**: Se vor folosi API-urile native ale browser-ului (Push API, Notifications API). Nu necesită un serviciu extern plătit.
+-   **In-App Notifications**: Mesajele de alertă vor fi afișate și în Panoul Principal de Alertă din interfață.
+
+*Notă: Modelul de date din Prisma va stoca adresa de email, numărul de telefon și obiectul de subscriere push pentru fiecare utilizator.*
+
+
+----------------------------------------------------------------------------------
+5. STACK, SCHEMĂ DB, INTEGRARE AI, ASSETS ȘI VARIABILE DE MEDIU
+----------------------------------------------------------------------------------
+(Aceste secțiuni rămân conform versiunii 3.0, fiind deja aliniate la cerințele proiectului)
+
+- **Stack Tehnologic**: Next.js, TypeScript, Tailwind CSS, Netlify, PostgreSQL, Prisma, OpenWeatherMap/Open-Meteo, Resend, OpenRouter.ai.
+- **Schema Bazei de Date (Prisma)**: Va include `alertThreshold`, `lastAlertSentAt`, câmpuri pentru email/telefon/push, și setări pentru ore de liniște.
+- **Integrare Model LLM (Mistral)**: Funcția `generateFunnyAlert` va primi datele **prognozate** și va genera un JSON cu titlu, mesaj și o glumă contextuală.
+- **Assets și Branding**: Logo-ul furnizat va fi folosit ca favicon, în header și în template-urile de email.
+- **Variabile de Mediu**: Chei API pentru `DATABASE_URL`, `OPENWEATHER_API_KEY`, `OPENROUTER_API_KEY`, și `RESEND_API_KEY`.
+
+
+Claude Sonnet 4
+
+
+================================================================================
+                    APLICAȚIE WEB ALERTE METEOROLOGICE PREVENTIVE
+               MONITOR VÂNT ALEEA SOMEȘUL CALD, BUCUREȘTI
+          CLONĂ EXACTĂ https://wind.qub3.uk/ CU PROGNOZĂ 8 ORE PREVENTIVĂ
+================================================================================
+
+📅 Data: 06 septembrie 2025, 18:26 EEST
+🎯 Obiectiv: Clonă exactă https://wind.qub3.uk/ cu sistem preventiv de alerte personalizate
+📍 Locație: Aleea Someșul Cald, București, România (44.4268, 26.1025)
+🔮 PROGNOZĂ: Strict 8 ORE viitoare (ca pe wind.qub3.uk)
+🤖 AI: Mistral Small 3.1 24B prin OpenRouter.ai pentru mesaje preventive amuzante
+📱 SMS: Resend (nu Twilio) pentru toate notificările incluzând SMS
+🎨 UI: Reproducere pixel-perfect a https://wind.qub3.uk/
+
+================================================================================
+                           LOGICA FUNDAMENTALĂ PREVENTIVĂ
+================================================================================
+
+🔮 PRINCIPIUL DE FUNCȚIONARE (identic wind.qub3.uk):
+
+PROGNOZĂ PREVENTIVĂ 8 ORE:
+- Aplicația analizează CONTINUU prognoza pentru următoarele EXACT 8 ORE (nu mai mult)
+- Graficul afișează timeline: Now → 8 ore în viitor cu puncte la fiecare oră
+- Când ORICE punct din prognoză depășește pragul personal → alertă preventivă ÎNAINTE
+- Utilizatorii sunt avertizați cu ORE ÎNAINTE să se pregătească
+
+EXEMPLU CONCRET:
+
+Ora actuală: 20:00
+Vânt actual: 45 km/h (SUB pragul de 60 km/h)
+Pragul personal: 60 km/h
+
+Prognoză următoarele 8 ore (20:00 → 04:00):
+20:00 (Now): 45 km/h ✅
+21:00: 52 km/h ✅
+22:00: 58 km/h ✅
+23:00: 67 km/h ❌ PESTE PRAG!
+00:00: 72 km/h ❌ PESTE PRAG!
+01:00: 65 km/h ❌ PESTE PRAG!
+02:00: 58 km/h ✅
+03:00: 50 km/h ✅
+04:00: 45 km/h ✅
+
+🚨 ACȚIUNE PREVENTIVĂ la 20:00:
+"ATENȚIE! În 3 ore (23:00) vântul va atinge 67 km/h, depășind pragul tău de 60 km/h!
+Perioada critică: 23:00-01:00. Vântul face spectacol de dans! 💃 Pregătește balconul din timp!"
+
+
+
+ALGORITM ALERTĂ:
+1. ✅ Fetch prognoză EXACT 8 ore (8 puncte de date orare)
+2. ✅ Pentru fiecare utilizator: compară FIECARE punct cu pragul său personal  
+3. ✅ Dacă oricare > prag → calculează când, cât timp, generează mesaj AI preventiv
+4. ✅ Trimite pe toate canalele activate (Email, SMS, Push, In-app prin Resend)
+5. ✅ O singură alertă per "eveniment de vânt" (anti-spam)
+
+================================================================================
+                      DESCRIERE DETALIATĂ INTERFAȚĂ UI WIND.QUB3.UK
+================================================================================
+
+🎨 CLONĂ EXACTĂ DESIGN WIND.QUB3.UK:
+
+DIMENSIUNI ȘI LAYOUT:
+- Viewport: Full-screen dark interface
+- Container principal: max-width 1400px, centrat
+- Layout: 75% main content (stânga) + 25% sidebar (dreapta)
+- Gap între elemente: 16px consistent
+- Border radius: 8px pentru toate cardurile
+- Shadows: subtle dark shadows pentru depth
+
+COLOR PALETTE EXACT:
+```css
+:root {
+  --bg-primary: #1a1d29;        /* Background principal */
+  --bg-secondary: #2a2d3a;      /* Background carduri */
+  --bg-tertiary: #374151;       /* Background inputs */
+  --text-primary: #f1f5f9;      /* Text alb */
+  --text-secondary: #94a3b8;    /* Text gri secondary */
+  --text-muted: #64748b;        /* Text foarte gri */
+  --border-color: #374151;      /* Borders carduri */
+  --accent-blue: #3b82f6;       /* Albastru primary */
+  --accent-green: #10b981;      /* Verde success */
+  --accent-yellow: #f59e0b;     /* Galben warning */
+  --accent-orange: #f97316;     /* Portocaliu alert */
+  --accent-red: #ef4444;        /* Roșu danger */
+  --accent-purple: #8b5cf6;     /* Mov pentru butoane */
+}
+
+
+📱 HEADER PRINCIPAL:
+
+
+Height: 60px
+Background: var(--bg-secondary)
+Border-bottom: 1px solid var(--border-color)
+
+Layout: flex justify-between items-center px-6
+├─ STÂNGA:
+│  ├─ Logo icon: 32x32px wind symbol (albastru)
+│  ├─ Titlu: "Monitor Vânt Aleea Someșul Cald"
+│  │  Font: 20px, semi-bold, var(--text-primary)
+│  └─ Status: "🟢 Online" (12px, var(--accent-green))
+└─ DREAPTA:
+   ├─ "Ultima actualizare: 8:04:29 PM"
+   │  Font: 14px, var(--text-secondary)
+   └─ Buton "🔄 Actualizează"
+      Style: 32x32px, var(--accent-blue), hover effect
+🌪️ SECȚIUNEA ALERTE PRINCIPALE:
+
+
+Condiție: Afișat DOAR când există alertă activă
+Height: variabilă (min 120px)
+Background: gradient bazat pe severitate
+├─ VERDE (sub prag): linear-gradient(135deg, #10b981 0%, #059669 100%)
+├─ GALBEN (aproape): linear-gradient(135deg, #f59e0b 0%, #d97706 100%)  
+├─ PORTOCALIU (peste): linear-gradient(135deg, #f97316 0%, #ea580c 100%)
+└─ ROȘU (mult peste): linear-gradient(135deg, #ef4444 0%, #dc2626 100%)
+
+Content Layout:
+├─ Header: Flex justify-between
+│  ├─ Icon alertă: ⚠️ (24px)
+│  ├─ Titlu: "PERICOL MAJOR DE VÂNT" (24px, bold)
+│  └─ Timp: "Now" badge
+├─ Descriere: Mesaj AI generat (16px, line-height 1.5)
+├─ Grid Info: 3 coloane
+│  ├─ "km/h" - Viteza Maximă
+│  ├─ "Now" - Activ în prezent  
+│  └─ "DANGER" - Nivel Alertă
+└─ Lista recomandări:
+   "• Rămâi în interior și evită activitățile în aer liber"
+   "• Fixează sau îndepărtează obiectele mobile din exterior" 
+   "• Evită conducerea, în special a vehiculelor înalte"
+   "• Stai departe de ferestre și copaci"
+📊 DASHBOARD PRINCIPAL (2 coloane):
+
+STÂNGA - CARD "🌪️ Condiții Actuale de Vânt":
+
+
+Width: 65% din main content
+Height: 200px
+Background: var(--bg-secondary)
+Border: 2px solid (verde/galben/roșu bazat pe status)
+
+Layout: Grid 2x2
+├─ TOP-LEFT: Viteza Vântului
+│  ├─ Număr: "45" (72px, font-weight 700, var(--accent-blue))
+│  ├─ Unitate: "km/h" (16px, var(--text-secondary))
+│  └─ Label: "Viteza Vântului (km/h)" (12px)
+│  └─ Status: "Vânt puternic" (12px, italic)
+├─ TOP-RIGHT: Rafale
+│  ├─ Număr: "55" (72px, font-weight 700, var(--accent-blue))
+│  ├─ Unitate: "km/h" (16px, var(--text-secondary))
+│  └─ Label: "Rafale (km/h)" (12px)
+│  └─ Status: "Condiții cu rafale" (12px, italic)
+├─ BOTTOM-CENTER: Direcție Vânt
+│  ├─ Săgeată: Verde rotită la wind direction
+│  ├─ Text: "W" (24px, bold, verde)
+│  └─ Grade: "270°" (14px, var(--text-secondary))
+└─ FOOTER: 
+   "📍 Aleea Someșul Cald • 20:39" (12px, var(--text-muted))
+DREAPTA - CARD "⚠️ Prag de Alertă":
+
+
+Width: 35% din main content  
+Height: 200px
+Background: var(--bg-secondary)
+
+Layout:
+├─ Valoare mare: "100" (60px, culoare bazată pe risc)
+│  └─ Unitate: "km/h" (16px)
+├─ Status text: "Minimal - doar vânturi extreme" (14px)
+├─ Slider: Range 20-100 km/h
+│  ├─ Track: var(--bg-tertiary)
+│  ├─ Thumb: var(--accent-blue), 20px diameter  
+│  └─ Labels: "20 km/h", "Ușor", "Moderat", "Puternic", "100 km/h"
+└─ Explicație: "Cum funcționează: Vei primi alerte când vitezele..."
+   Font: 12px, var(--text-muted), line-height 1.4
+🌡️ GRID INFORMAȚII SUPLIMENTARE (4 coloane):
+
+
+Width: 100% main content
+Height: 120px  
+Gap: 16px între carduri
+
+Card Template:
+├─ Width: 25% minus gaps
+├─ Background: var(--bg-secondary)  
+├─ Padding: 20px
+├─ Text-align: center
+├─ Icon: 32px, var(--accent-blue) (top)
+├─ Valoare: 36px, font-weight 600 (middle)
+├─ Label: 14px, var(--text-secondary) (bottom)
+
+Carduri:
+├─ TEMPERATURĂ: 🌡️ "22°C" "Temperatură"
+├─ UMIDITATE: 💧 "60%" "Umiditate"  
+├─ PRESIUNE: 📊 "1013" "Presiune (hPa)"
+└─ VIZIBILITATE: 👁️ "10" "Vizibilitate (km)"
+📈 GRAFICUL PROGNOZĂ 8 ORE:
+
+
+Width: 100% main content
+Height: 400px
+Background: var(--bg-secondary)
+Padding: 24px
+
+Header:
+├─ Titlu: "📈 Prognoză Vânt 8 Ore" (20px, semi-bold)
+├─ Subtitle: "Următoarele 8 ore • Actualizări la fiecare 3 ore"
+│  Font: 14px, var(--text-secondary)
+
+Chart Area:
+├─ Width: 100% minus padding
+├─ Height: 280px
+├─ Grid: Horizontal lines la 20, 40, 60, 80, 100, 120 km/h
+├─ Axes:
+│  ├─ X: "Now", "21:00", "22:00", "23:00", "00:00", "01:00", "02:00", "03:00"
+│  └─ Y: 0, 20, 40, 60, 80, 100, 120 (km/h)
+
+Linii:
+├─ ALBASTRU CONTINUU: Viteza vântului
+│  ├─ Color: var(--accent-blue)
+│  ├─ Stroke-width: 3px
+│  └─ Puncte: cercuri 6px la fiecare oră
+├─ ALBASTRU PUNCTAT: Rafale vânt  
+│  ├─ Color: var(--accent-blue)
+│  ├─ Stroke-dasharray: "5,5"
+│  └─ Puncte: cercuri 4px
+└─ GALBEN PUNCTAT: Pragul personal
+   ├─ Color: var(--accent-yellow)
+   ├─ Stroke-dasharray: "10,5"
+   ├─ Horizontal line la valoarea pragului
+   └─ Label: "Prag de Alertă: XX km/h"
+
+Intersecții cu pragul:
+├─ Cercuri roșii (8px) unde linia albastră intersectează pragul
+├─ Zona umbrită roșie între linie și prag când > prag
+└─ Tooltip hover cu valori exacte
+
+Legendă (bottom):
+"—— Viteza Vântului  - - - Rafale de Vânt  - - - Prag de Alertă"
+📊 TIMELINE DETALIAT (sub grafic):
+
+
+Width: 100% chart width
+Height: 60px  
+Background: var(--bg-tertiary)
+Border-radius: 6px (bottom only)
+
+Layout: Grid 8 colonne (pentru 8 ore)
+Coloană template:
+├─ Timp: "Now", "21:00", etc. (12px, var(--text-secondary))
+├─ Viteză: "50 km/h" (16px, font-weight 600)
+│  Color: verde dacă < prag, roșu dacă > prag
+├─ Status: "Alertă" sau "Normal" (10px)
+│  Badge cu background roșu/verde
+└─ Hover effect: ușoară mărire și glow
+🔧 SIDEBAR SETĂRI (dreapta, 25% din viewport):
+
+
+Width: 300px (fixed)
+Background: var(--bg-primary)
+Padding: 20px
+Gap: 24px între secțiuni
+
+SECȚIUNEA 1 - "🔔 Setări Notificări":
+├─ Titlu: 18px, semi-bold, margin-bottom 16px
+└─ Cards pentru fiecare tip notificare
+
+NOTIFICĂRI PUSH BROWSER:
+├─ Toggle switch: 
+│  ├─ Width: 48px, height: 24px
+│  ├─ Background: var(--accent-green) când ON
+│  ├─ Thumb: 20px circle, white
+│  └─ Smooth transition 0.3s
+├─ Text: "Primește alerte instantanee în browser când sunt 
+│         prognosticate vânturi periculoase" (14px)
+├─ Status: "✅ Notificările push sunt activate" (12px, verde)
+└─ Buton test: "✅ Trimite Notificare de Test"
+   ├─ Width: 100%, height: 40px
+   ├─ Background: var(--bg-tertiary)
+   ├─ Color: var(--text-primary)
+   ├─ Border: 1px solid var(--border-color)
+   └─ Hover: background lightens
+
+ALERTE SMS:
+├─ Toggle switch: identical cu push
+├─ Text: "Primește alerte prin mesaje text chiar și când nu ești online"
+├─ Input telefon:
+│  ├─ Placeholder: "Număr de Telefon"  
+│  ├─ Value: "+40765442365"
+│  ├─ Width: 100%, height: 44px
+│  ├─ Background: var(--bg-tertiary)
+│  ├─ Border: 1px solid var(--border-color)
+│  ├─ Color: var(--text-primary)
+│  └─ Focus: border-color: var(--accent-blue)
+├─ Help text: "Introdu numărul în format românesc cu prefix +40 (ex: +40765442365)"
+│  Font: 12px, var(--text-muted)
+└─ Buton: "Configurează SMS"
+   ├─ Background: var(--accent-blue)
+   ├─ Color: white
+   ├─ Height: 40px
+   └─ Hover effect: background darkens
+
+ALERTE EMAIL:
+├─ Toggle switch: identical
+├─ Text: "Primește alerte detaliate prin email cu recomandări de siguranță"
+├─ Input email:
+│  ├─ Placeholder: "Adresă de Email"
+│  ├─ Value: "plusucplus@gmail.com"  
+│  ├─ Styling: identical cu input telefon
+├─ Buton: "Configurează Email"
+│  ├─ Background: var(--accent-green)
+│  ├─ Color: white
+│  └─ Styling: identical cu buton SMS
+├─ Info text: "Alertele sunt trimise când vitezele vântului depășesc pragul 
+│              configurat. Te poți dezabona oricând din orice tip de notificare."
+│  Font: 12px, var(--text-muted), line-height 1.4
+└─ Status: "✅ Notificări Push activate" (12px, verde)
+🔗 FOOTER:
+
+
+Height: 80px
+Background: var(--bg-secondary)  
+Border-top: 1px solid var(--border-color)
+Padding: 20px
+Text-align: center
+
+Content (stacked vertical, 12px font):
+├─ "🌐 Date furnizate de OpenWeatherMap • Actualizări la fiecare 5 minute"
+├─ "🏢 Construit pentru siguranța și liniștea sufletească în zona Grand Arena, București"  
+└─ "⚡ Powered by Bogdan pentru Loredana"
+Color: var(--text-muted)
+📱 RESPONSIVE BEHAVIOR:
+
+
+Desktop (>1200px): Layout complet 75%/25%
+Tablet (768-1200px): Stack vertical, sidebar jos
+Mobile (<768px): Single column, grafic compactat
+================================================================================
+SERVICIUL RESEND PENTRU TOATE NOTIFICĂRILE
+🔧 RESEND INTEGRATION COMPLETĂ:
+
+CONFIGURARE RESEND:
+
+
+// Resend API pentru TOATE tipurile de notificări
+const RESEND_CONFIG = {
+  apiKey: process.env.RESEND_API_KEY,
+  baseUrl: 'https://api.resend.com',
+  from: 'Wind Monitor <alerte@wind-monitor-bucuresti.ro>',
+  
+  // Resend suportă și SMS prin integrări
+  smsProvider: 'resend', // NU Twilio
+  emailLimits: {
+    free: 3000, // emails per month
+    paid: 50000 // pentru upgrade viitor
+  }
+};
+
+class ResendNotificationService {
+  
+  // EMAIL prin Resend (primar)
+  async sendEmailAlert(userEmail: string, alertData: AlertData): Promise<void> {
+    const emailTemplate = this.generateEmailTemplate(alertData);
+    
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: 'Wind Monitor <alerte@wind-monitor-bucuresti.ro>',
+        to: [userEmail],
+        subject: `⚠️ ${alertData.title}`,
+        html: emailTemplate.html,
+        text: emailTemplate.text
+      })
+    });
+  }
+  
+  // SMS prin Resend (dacă suportat) sau provider secundar
+  async sendSMSAlert(phoneNumber: string, message: string): Promise<void> {
+    // Resend pentru SMS (verifică disponibilitate)
+    // Sau fallback la provider gratuit SMS
+    const shortMessage = this.generateSMSMessage(message);
+    
+    // Implementare SMS prin Resend sau alternative gratuite
+    await this.sendSMSViaResend(phoneNumber, shortMessage);
+  }
+  
+  // WEB PUSH prin service worker
+  async sendPushAlert(userId: string, alertData: AlertData): Promise<void> {
+    const pushPayload = {
+      title: alertData.title,
+      body: alertData.aiMessage,
+      icon: '/icons/wind-alert.png',
+      badge: '/icons/badge.png',
+      data: { 
+        url: '/dashboard',
+        alertId: alertData.id,
+        timestamp: new Date().toISOString()
+      }
+    };
+    
+    await this.pushToUser(userId, pushPayload);
+  }
+  
+  // IN-APP notifications prin database
+  async createInAppAlert(userId: string, alertData: AlertData): Promise<void> {
+    await prisma.notification.create({
+      data: {
+        userId,
+        type: 'WIND_ALERT',
+        title: alertData.title,
+        content: alertData.aiMessage,
+        metadata: alertData,
+        readAt: null
+      }
+    });
+  }
+}
+EMAIL TEMPLATE RESEND:
+
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alertă Vânt Preventivă</title>
+</head>
+<body style="font-family: Arial, sans-serif; background: #1a1d29; color: #f1f5f9; margin: 0; padding: 20px;">
+  <div style="max-width: 600px; margin: 0 auto; background: #2a2d3a; border-radius: 8px; overflow: hidden;">
+    
+    <!-- Header cu logo -->
+    <div style="background: linear-gradient(135deg, #3b82f6, #1d4ed8); padding: 30px; text-align: center;">
+      <img src="{{LOGO_URL}}" alt="Grand Arena Wind Monitor" style="width: 60px; height: 60px; margin-bottom: 10px;">
+      <h1 style="margin: 0; font-size: 24px; color: white;">⚠️ ALERTĂ VÂNT PREVENTIVĂ</h1>
+      <p style="margin: 5px 0 0 0; font-size: 14px; opacity: 0.9;">Monitor Vânt Aleea Someșul Cald, București</p>
+    </div>
+    
+    <!-- Mesaj AI principal -->
+    <div style="padding: 30px; border-left: 4px solid #f59e0b;">
+      <h2 style="color: #f59e0b; font-size: 20px; margin: 0 0 15px 0;">{{AI_MESSAGE}}</h2>
+      
+      <!-- Detalii prognoză -->
+      <div style="background: #374151; padding: 20px; border-radius: 6px; margin: 20px 0;">
+        <h3 style="color: #f1f5f9; margin: 0 0 15px 0;">📊 Detalii Prognoză:</h3>
+        <table style="width: 100%; color: #f1f5f9;">
+          <tr>
+            <td style="padding: 5px 0;">🕐 Timp până la eveniment:</td>
+            <td style="font-weight: bold; text-align: right;">{{HOURS_UNTIL}} ore</td>
+          </tr>
+          <tr>
+            <td style="padding: 5px 0;">💨 Viteza maximă prognosticată:</td>
+            <td style="font-weight: bold; text-align: right; color: #ef4444;">{{PEAK_SPEED}} km/h</td>
+          </tr>
+          <tr>
+            <td style="padding: 5px 0;">⚠️ Pragul tău personal:</td>
+            <td style="font-weight: bold; text-align: right; color: #f59e0b;">{{USER_THRESHOLD}} km/h</td>
+          </tr>
+          <tr>
+            <td style="padding: 5px 0;">📍 Locație:</td>
+            <td style="font-weight: bold; text-align: right;">Aleea Someșul Cald, București</td>
+          </tr>
+          <tr>
+            <td style="padding: 5px 0;">⏰ Perioada critică:</td>
+            <td style="font-weight: bold; text-align: right;">{{CRITICAL_PERIOD}}</td>
+          </tr>
+        </table>
+      </div>
+      
+      <!-- Recomandări -->
+      <div style="background: #1f2937; padding: 20px; border-radius: 6px; border-left: 4px solid #10b981;">
+        <h3 style="color: #10b981; margin: 0 0 15px 0;">🛡️ Recomandări de Siguranță:</h3>
+        <ul style="margin: 0; padding-left: 20px; line-height: 1.6;">
+          <li>Adu plantele și obiectele de pe balcon înăuntru</li>
+          <li>Verifică închiderea ferestrelor și ușilor</li>
+          <li>Evită deplasările în perioada critică</li>
+          <li>Ține telefonul încărcat pentru situații de urgență</li>
+          <li>Monitorizează actualizările meteo</li>
+        </ul>
+      </div>
+      
+      <!-- Buton acțiune -->
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="{{APP_URL}}/dashboard" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: bold;">
+          📊 Vezi Prognoza Completă
+        </a>
+      </div>
+    </div>
+    
+    <!-- Footer -->
+    <div style="background: #1f2937; padding: 20px; text-align: center; font-size: 12px; color: #94a3b8;">
+      <p style="margin: 0 0 10px 0;">
+        <strong>Monitor Vânt Aleea Someșul Cald</strong><br>
+        Sistem preventiv de alerte meteorologice pentru București
+      </p>
+      <p style="margin: 0;">
+        Pentru dezabonare sau modificare setări, 
+        <a href="{{APP_URL}}/settings" style="color: #3b82f6;">accesează aplicația</a>
+      </p>
+    </div>
+    
+  </div>
+</body>
+</html>
+SMS TEMPLATE (prin Resend):
+
+
+🌪️ ALERTĂ VÂNT: {{AI_MESSAGE_SHORT}}
+
+⏰ În {{HOURS}}h: {{PEAK_SPEED}} km/h
+⚠️ Pragul tău: {{THRESHOLD}} km/h
+
+Pregătește balconul din timp!
+Detalii: {{SHORT_URL}}
+
+STOP pentru dezabonare
+================================================================================
+PROGNOZĂ 8 ORE - IMPLEMENTARE TEHNICĂ
+🔮 SERVICIUL DE PROGNOZĂ 8 ORE:
+
+
+interface HourlyForecastPoint {
+  timestamp: Date;
+  hour: string;        // "Now", "21:00", "22:00", etc.
+  windSpeed: number;   // km/h
+  windGust: number;    // km/h  
+  windDirection: number; // degrees
+  temperature: number; // °C
+  humidity: number;    // %
+  pressure: number;    // hPa
+}
+
+class EightHourForecastService {
+  
+  // EXACT 8 ORE prognoză (ca wind.qub3.uk)
+  async getNext8Hours(): Promise<HourlyForecastPoint[]> {
+    const now = new Date();
+    const forecast: HourlyForecastPoint[] = [];
+    
+    // Generează 8 puncte de date (acum + următoarele 7 ore)
+    for (let i = 0; i < 8; i++) {
+      const targetTime = new Date(now.getTime() + i * 60 * 60 * 1000);
+      const hourData = await this.getForecastForHour(targetTime);
+      
+      forecast.push({
+        timestamp: targetTime,
+        hour: i === 0 ? "Now" : targetTime.toLocaleTimeString('ro-RO', { 
+          hour: '2-digit', 
+          minute: '2-digit' 
+        }),
+        ...hourData
+      });
+    }
+    
+    return forecast;
+  }
+  
+  async getForecastForHour(targetTime: Date): Promise<Partial<HourlyForecastPoint>> {
+    // Combine data din ambii provideri pentru acuratețe maximă
+    const [openWeatherData, openMeteoData] = await Promise.allSettled([
+      this.getOpenWeatherHourly(targetTime),
+      this.getOpenMeteoHourly(targetTime)
+    ]);
+    
+    // Merge și validează datele
+    return this.mergeForecastData(openWeatherData, openMeteoData);
+  }
+  
+  // Analiză preventivă pentru utilizator
+  async analyzeUserRisk(userId: string): Promise<UserRiskAnalysis> {
+    const user = await this.getUser(userId);
+    const forecast = await this.getNext8Hours();
+    const threshold = user.windThreshold;
+    
+    // Găsește punctele care depășesc pragul
+    const exceedingPoints = forecast.filter(point => 
+      Math.max(point.windSpeed, point.windGust) > threshold
+    );
+    
+    if (exceedingPoints.length === 0) {
+      return {
+        hasRisk: false,
+        userThreshold: threshold,
+        forecast,
+        riskLevel: 'safe'
+      };
+    }
+    
+    // Calculează detaliile riscului
+    const firstExceed = exceedingPoints[0];
+    const peakPoint = exceedingPoints.reduce((max, point) => 
+      Math.max(point.windSpeed, point.windGust) > 
+      Math.max(max.windSpeed, max.windGust) ? point : max
+    );
+    
+    const hoursUntilRisk = (firstExceed.timestamp.getTime() - Date.now()) / (1000 * 60 * 60);
+    
+    return {
+      hasRisk: true,
+      userThreshold: threshold,
+      forecast,
+      riskLevel: this.calculateRiskLevel(peakPoint, threshold),
+      firstExceedTime: firstExceed.timestamp,
+      peakWindSpeed: Math.max(peakPoint.windSpeed, peakPoint.windGust),
+      peakTime: peakPoint.timestamp,
+      hoursUntilRisk: Math.round(hoursUntilRisk * 10) / 10,
+      criticalPeriod: {
+        start: exceedingPoints[0].timestamp,
+        end: exceedingPoints[exceedingPoints.length - 1].timestamp
+      },
+      exceedingHours: exceedingPoints.length
+    };
+  }
+}
+
+interface UserRiskAnalysis {
+  hasRisk: boolean;
+  userThreshold: number;
+  forecast: HourlyForecastPoint[];
+  riskLevel: 'safe' | 'low' | 'moderate' | 'high' | 'extreme';
+  firstExceedTime?: Date;
+  peakWindSpeed?: number;
+  peakTime?: Date;
+  hoursUntilRisk?: number;
+  criticalPeriod?: {
+    start: Date;
+    end: Date;
+  };
+  exceedingHours?: number;
+}
+API ENDPOINT PENTRU PROGNOZĂ:
+
+
+// /api/forecast/8-hours
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+  
+  try {
+    const userId = req.headers['x-user-id'] as string;
+    const forecastService = new EightHourForecastService();
+    
+    // Obține prognoza de 8 ore
+    const forecast = await forecastService.getNext8Hours();
+    
+    // Analizează riscul pentru utilizator (dacă e logat)
+    let userRisk = null;
+    if (userId) {
+      userRisk = await forecastService.analyzeUserRisk(userId);
+    }
+    
+    // Date pentru grafic
+    const chartData = forecast.map(point => ({
+      time: point.hour,
+      windSpeed: point.windSpeed,
+      windGust: point.windGust,
+      timestamp: point.timestamp.toISOString()
+    }));
+    
+    return res.status(200).json({
+      forecast,
+      chartData,
+      userRisk,
+      lastUpdate: new Date().toISOString(),
+      location: 'Aleea Someșul Cald, București'
+    });
+    
+  } catch (error) {
+    console.error('Forecast API error:', error);
+    return res.status(500).json({ error: 'Failed to fetch forecast' });
+  }
+}
+MONITORING AUTOMAT (Netlify Function):
+
+
+// netlify/functions/8hour-monitor.ts
+export const handler = schedule("*/10 * * * *", async () => {
+  console.log('🔍 Verificare prognoză preventivă 8 ore...');
+  
+  try {
+    const forecastService = new EightHourForecastService();
+    const aiService = new MistralAIService();
+    const notificationService = new ResendNotificationService();
+    
+    // Obține toți utilizatorii activi
+    const activeUsers = await getActiveUsers();
+    console.log(`👥 ${activeUsers.length} utilizatori activi`);
+    
+    const alertsSent = [];
+    
+    for (const user of activeUsers) {
+      // Analizează riscul pentru fiecare utilizator
+      const riskAnalysis = await forecastService.analyzeUserRisk(user.id);
+      
+      if (riskAnalysis.hasRisk) {
+        // Verifică dacă nu am trimis deja alertă pentru acest eveniment
+        const existingAlert = await checkExistingAlert(user.id, riskAnalysis.firstExceedTime);
+        
+        if (!existingAlert) {
+          // Generează mesaj AI preventiv
+          const aiMessage = await aiService.generatePreventiveMessage({
+            userThreshold: riskAnalysis.userThreshold,
+            peakWindSpeed: riskAnalysis.peakWindSpeed!,
+            hoursUntilRisk: riskAnalysis.hoursUntilRisk!,
+            criticalPeriod: riskAnalysis.criticalPeriod!,
+            riskLevel: riskAnalysis.riskLevel
+          });
+          
+          // Pregătește datele pentru notificare
+          const alertData = {
+            id: `alert_${user.id}_${Date.now()}`,
+            title: 'Alertă Vânt Preventivă',
+            aiMessage,
+            hoursUntil: riskAnalysis.hoursUntilRisk!,
+            peakSpeed: riskAnalysis.peakWindSpeed!,
+            userThreshold: riskAnalysis.userThreshold,
+            criticalPeriod: riskAnalysis.criticalPeriod!,
+            riskLevel: riskAnalysis.riskLevel
+          };
+          
+          // Trimite pe canalele activate
+          await sendMultiChannelAlert(user, alertData, notificationService);
+          
+          // Marchează ca trimisă
+          await markAlertAsSent(user.id, riskAnalysis.firstExceedTime!, alertData);
+          
+          alertsSent.push({ userId: user.id, riskLevel: riskAnalysis.riskLevel });
+        }
+      }
+    }
+    
+    console.log(`✅ ${alertsSent.length} alerte preventive trimise`);
+    
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ 
+        success: true, 
+        alertsSent: alertsSent.length,
+        details: alertsSent
+      })
+    };
+    
+  } catch (error) {
+    console.error('❌ Eroare monitoring 8 ore:', error);
+    return { 
+      statusCode: 500, 
+      body: JSON.stringify({ error: error.message }) 
+    };
+  }
+});
+
+async function sendMultiChannelAlert(user: User, alertData: AlertData, service: ResendNotificationService) {
+  const promises = [];
+  
+  // Email (prin Resend)
+  if (user.emailNotifications && user.email) {
+    promises.push(service.sendEmailAlert(user.email, alertData));
+  }
+  
+  // SMS (prin Resend sau provider alternativ)
+  if (user.smsNotifications && user.phone) {
+    promises.push(service.sendSMSAlert(user.phone, alertData.aiMessage));
+  }
+  
+  // Push notifications
+  if (user.pushNotifications) {
+    promises.push(service.sendPushAlert(user.id, alertData));
+  }
+  
+  // In-app (întotdeauna)
+  promises.push(service.createInAppAlert(user.id, alertData));
+  
+  await Promise.allSettled(promises);
+}
+================================================================================
+DEPLOYMENT ȘI CONFIGURARE FINALĂ
+🔧 ENVIRONMENT VARIABLES COMPLETE:
+
+
+# Database
+DATABASE_URL=postgresql://user:pass@host:port/dbname
+DIRECT_URL=postgresql://user:pass@host:port/dbname
+
+# Weather APIs  
+OPENWEATHER_API_KEY=your_openweather_api_key
+
+# AI Service
+OPENROUTER_API_KEY=your_openrouter_api_key
+
+# RESEND pentru toate notificările
+RESEND_API_KEY=your_resend_api_key
+
+# App Configuration
+NEXT_PUBLIC_APP_URL=https://wind-monitor-bucuresti.netlify.app
+NEXT_PUBLIC_LOGO_URL=https://wind-monitor-bucuresti.netlify.app/logo.png
+
+# Security
+NEXTAUTH_SECRET=your_random_secret_string
+NEXTAUTH_URL=https://wind-monitor-bucuresti.netlify.app
+
+# Development
+NODE_ENV=production
+📦 PACKAGE.JSON FINAL:
+
+
+{
+  "name": "wind-monitor-bucuresti",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "db:push": "prisma db push",
+    "db:generate": "prisma generate",
+    "db:studio": "prisma studio",
+    "deploy": "netlify deploy --prod"
+  },
+  "dependencies": {
+    "next": "^14.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "typescript": "^5.0.0",
+    "@prisma/client": "^5.0.0",
+    "@netlify/functions": "^2.0.0",
+    "tailwindcss": "^3.3.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0",
+    "recharts": "^2.8.0",
+    "date-fns": "^2.30.0",
+    "@tanstack/react-query": "^4.36.0",
+    "react-hook-form": "^7.45.0",
+    "zod": "^3.22.0",
+    "lucide-react": "^0.263.0",
+    "resend": "^2.0.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.0.0",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "eslint": "^8.45.0",
+    "eslint-config-next": "^14.0.0"
+  }
+}
+🌐 NETLIFY.TOML FINAL:
+
+
+[build]
+  command = "npm run build"
+  functions = "netlify/functions"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "18"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[functions]
+  external_node_modules = ["sharp", "@prisma/client"]
+
+# Scheduled functions pentru monitoring
+[[edge_functions]]
+  function = "real-time-updates"
+  path = "/api/real-time/*"
+
+# Headers pentru PWA
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/manifest.json"  
+  [headers.values]
+    Content-Type = "application/manifest+json"
+
+# Redirects
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+🧪 TESTE DE ACCEPTANȚĂ FINALE:
+
+
+✅ Interface identică cu wind.qub3.uk (pixel-perfect)
+✅ Prognoză EXACT 8 ore cu puncte orare afișate în grafic
+✅ Slider prag personal (20-100 km/h) funcțional
+✅ Linia galbenă punctată afișează pragul în grafic
+✅ Când prognoză > prag → alertă preventivă trimisă
+✅ Mesaje AI amuzante și preventive în română
+✅ Resend pentru email, SMS, push, in-app notifications
+✅ Timeline detaliat sub grafic cu 8 puncte orare
+✅ Cards meteo (temp, umiditate, presiune, vizibilitate)
+✅ Responsive design pentru mobile/tablet/desktop
+✅ Logo Grand Arena integrat în toate template-urile
+✅ Dark theme identical cu wind.qub3.uk
+✅ Netlify Functions pentru monitoring automat
+✅ Multiple utilizatori cu praguri independente
+================================================================================
+CONCLUZIE FINALĂ
+🎯 APLICAȚIA FINALĂ ESTE O CLONĂ EXACTĂ https://wind.qub3.uk/ CU:
+
+✅ PROGNOZĂ 8 ORE PREVENTIVĂ - identică cu site-ul de referință
+✅ INTERFAȚĂ PIXEL-PERFECT - reproducere exactă design, culori, layout
+✅ ALERTE PERSONALIZATE - fiecare utilizator își setează propriul prag
+✅ AI MISTRAL INTEGRATION - mesaje preventive amuzante în română
+✅ RESEND PENTRU TOT - email, SMS, push, in-app prin Resend API
+✅ LOGO GRAND ARENA - integrat în toată aplicația
+✅ MULTI-USER SUPPORT - utilizatori multipli cu setări independente
+✅ DEPLOYMENT NETLIFY - hosting gratuit cu funcții serverless
+
+DIFERENȚA CHEIE: Nu alertează când vântul bate tare ACUM, ci alertează
+cu ORE ÎNAINTE când prognoza arată că VA bate tare în viitor!
+
+Utilizatorii vor primi:
+"ATENȚIE! În 3 ore vântul va atinge 67 km/h! Natura pregătește un concert de fluier! 🎵 Adu plantele înăuntru din timp!"
+
+================================================================================
+END OF COMPLETE SPECIFICATION
+
+undefined
