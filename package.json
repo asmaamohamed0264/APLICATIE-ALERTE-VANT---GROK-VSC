@@ -8,6 +8,7 @@
   "dependencies": {
     "@netlify/functions": "^4.2.5",
     "@prisma/client": "^6.15.0",
+    "@react-email/render": "^1.2.2",
     "@tanstack/react-query": "^5.87.1",
     "@types/next": "^8.0.7",
     "@types/react": "^19.1.12",
